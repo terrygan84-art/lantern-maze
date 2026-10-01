@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Lantern Maze</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#050607;color:#eee9df;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.wrap{width:min(96vw,680px);margin:14px auto;padding:0 8px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.title{font-size:18px;font-weight:900;letter-spacing:.03em}
+.stats{display:flex;align-items:center;gap:9px;font-size:11px;color:#999}
+.stats b{color:#f4df9b}
+.restart{border:1px solid #38352e;background:#11110f;color:#999;border-radius:8px;padding:6px 8px;font:700 10px ui-monospace;white-space:nowrap}
+.restart:active,.pause:active{transform:scale(.96);background:#242118}
+.pause{border:1px solid #4b4639;background:#11110f;color:#c9b987;border-radius:8px;padding:6px 8px;font:700 10px ui-monospace;white-space:nowrap}
+.pauseOverlay{display:none;position:absolute;inset:0;background:rgba(2,3,4,.88);align-items:center;justify-content:center;flex-direction:column;border-radius:9px}
+.pauseOverlay.show{display:flex}.pauseTitle{font-size:26px;font-weight:900;letter-spacing:.08em;color:#e6d7b4}.resume{margin-top:14px;border:1px solid #67552f;background:#1b1810;color:#f2d98d;border-radius:10px;padding:11px 20px;font:700 12px ui-monospace}
+.modes{display:flex;gap:7px;justify-content:center;margin:8px 0}
+.modes button{border:1px solid #39362f;background:#11110f;color:#999;border-radius:9px;padding:7px 12px;font:700 11px ui-monospace}
+.modes button.active{color:#f4df9b;border-color:#8d7540}
+.frame{position:relative;background:#000;border:1px solid #28251f;border-radius:14px;padding:7px}
+canvas{display:block;width:100%;height:auto;border-radius:9px;touch-action:none}
+.message{text-align:center;height:20px;margin:7px 0;color:#999;font-size:11px}
+.pad{display:grid;grid-template-columns:repeat(3,62px);gap:7px;justify-content:center;margin-top:4px}
+.pad button{border:1px solid #39362f;background:#151512;color:#eee;border-radius:12px;min-width:62px;min-height:52px;font:700 19px ui-monospace;touch-action:manipulation}
+.pad button:active{transform:scale(.96);background:#29251b}
+.note{text-align:center;color:#666;font-size:10px;margin-top:8px}
+.death{display:none;text-align:center;padding:38px 8px}
+.death.show{display:block}
+.deadtitle{font-size:28px;font-weight:900;letter-spacing:.08em;color:#e6d7b4}
+.deadsub{font-size:11px;color:#8d897f;margin:8px 0 18px}
+.death button{border-radius:10px;padding:11px 16px;font:700 11px ui-monospace}
+.retry{border:1px solid #67552f;background:#1b1810;color:#f2d98d}
+.quit{border:1px solid #38352f;background:#12120f;color:#999;margin-left:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="title">🕯 LANTERN MAZE</div>
+    <div class="stats">
+      <span>LV <b id="lv">1</b></span>
+      <span>TIME <b id="time">180</b></span>
+      <span>★ <b id="score">0</b></span>
+      <button class="pause" id="pause">PAUSE</button><button class="restart" id="restart">RESTART RUN</button>
+    </div>
+  </div>
+
+  <div class="modes">
+    <button id="normal" class="active">NORMAL · 3:00</button>
+    <button id="hard">HARD · 1:10</button>
+  </div>
+
+  <div class="frame">
+    <canvas id="game" width="640" height="640"></canvas>
+    <div class="pauseOverlay" id="pauseOverlay"><div class="pauseTitle">PAUSED</div><button class="resume" id="resume">RESUME</button></div>
+    <div class="death" id="death">
+      <div class="deadtitle">YOU DIED</div>
+      <div class="deadsub" id="deadsub">Your lantern went dark.</div>
+      <button class="retry" id="retry">RETRY LEVEL</button>
+      <button class="quit" id="quit">QUIT RUN</button>
+    </div>
+  </div>
+
+  <div class="message" id="message">Find the green glow. The darkness hides the maze.</div>
+
+  <div class="pad">
+    <div></div><button data-d="u">▲</button><div></div>
+    <button data-d="l">◀</button><button data-d="d">▼</button><button data-d="r">▶</button>
+  </div>
+  <div class="note">Swipe the maze • WASD / arrow keys also work</div>
+</div>
+
+<script>
+(() => {
+const C=document.getElementById('game'),ctx=C.getContext('2d');
+const N=19,S=C.width/N;
+const lvEl=document.getElementById('lv'),timeEl=document.getElementById('time'),scoreEl=document.getElementById('score');
+const msg=document.getElementById('message'),death=document.getElementById('death'),deadsub=document.getElementById('deadsub');
+const normalBtn=document.getElementById('normal'),hardBtn=document.getElementById('hard');
+const restartBtn=document.getElementById('restart');
+const pauseBtn=document.getElementById('pause');
+const pauseOverlay=document.getElementById('pauseOverlay');
+const resumeBtn=document.getElementById('resume');
+const retryBtn=document.getElementById('retry'),quitBtn=document.getElementById('quit');
+
+let map,level=1,score=0,time=180,mode='normal',playing=true,paused=false,px=1,py=1;
+let levelSnapshot=null,levelStartScore=0,last=performance.now(),touch=null;
+let particles=[];
+
+const dirs=[[0,-1],[1,0],[0,1],[-1,0]];
+
+function cloneMap(m){return m.map(r=>r.slice())}
+
+function shuffle(a){
+  for(let i=a.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [a[i],a[j]]=[a[j],a[i]];
+  }
+  return a;
+}
+
+function generateLevel(){
+  map=Array.from({length:N},()=>Array(N).fill(1));
+
+  function carve(x,y){
+    map[y][x]=0;
+    for(const [dx,dy] of shuffle(dirs.slice())){
+      const nx=x+dx*2,ny=y+dy*2;
+      if(nx>0&&ny>0&&nx<N-1&&ny<N-1&&map[ny][nx]){
+        map[y+dy][x+dx]=0;
+        carve(nx,ny);
+      }
+    }
+  }
+
+  carve(1,1);
+  px=1;py=1;
+  map[N-2][N-2]=2;
+
+  const traps=mode==='hard'?Math.min(level+1,9):Math.min(Math.max(0,level-1),6);
+  let placed=0;
+  while(placed<traps){
+    const x=1+2*Math.floor(Math.random()*9);
+    const y=1+2*Math.floor(Math.random()*9);
+    if(map[y][x]===0&&(x!==1||y!==1)&&(x!==N-2||y!==N-2)){
+      map[y][x]=3;placed++;
+    }
+  }
+
+  levelSnapshot=cloneMap(map);
+  levelStartScore=score;
+  particles=Array.from({length:45},()=>({
+    x:Math.random()*C.width,y:Math.random()*C.height,
+    v:.08+Math.random()*.3,a:.12+Math.random()*.3
+  }));
+}
+
+function startLevelFresh(){
+  generateLevel();
+  time=mode==='normal'?180:70;
+  playing=true;paused=false;
+  death.classList.remove('show');
+  C.style.display='block';
+  msg.textContent=level===1?'Find the green glow. The darkness hides the maze.':'Deeper into the darkness.';
+  last=performance.now();
+  draw();
+}
+
+function retryLevel(){
+  // Same generated maze — no reconstruction/randomization.
+  map=cloneMap(levelSnapshot);
+  px=1;py=1;
+  score=levelStartScore;
+  time=mode==='normal'?180:70;
+  playing=true;paused=false;
+  death.classList.remove('show');
+  C.style.display='block';
+  msg.textContent='Same maze. Try a different route.';
+  last=performance.now();
+  draw();
+}
+
+function die(reason){
+  playing=false;
+  time=0;
+  C.style.display='none';
+  death.classList.add('show');
+  deadsub.textContent=reason+' Level '+level+' is still here — retry it.';
+  msg.textContent='';
+}
+
+function move(dx,dy){
+  if(!playing||paused)return;
+  const nx=px+dx,ny=py+dy;
+  if(nx<0||ny<0||nx>=N||ny>=N||map[ny][nx]===1)return;
+
+  px=nx;py=ny;score+=10;
+
+  if(map[py][px]===3){
+    if(mode==='hard'){
+      die('A hidden trap got you.');
+      return;
+    }
+    time=Math.max(0,time-10);
+    score=Math.max(0,score-100);
+    map[py][px]=0;
+    msg.textContent='⚠ Trap! -10 seconds.';
+  }
+
+  if(map[py][px]===2){
+    const bonus=Math.floor(time*50)+level*300;
+    score+=bonus;
+    level++;
+    playing=false;
+    msg.textContent='✦ ESCAPED! +'+bonus+' points';
+
+    setTimeout(()=>{
+      startLevelFresh();
+      msg.textContent='Level '+level+' — deeper into the darkness.';
+    },700);
+    return;
+  }
+  draw();
+}
+
+function draw(){
+  ctx.fillStyle='#020304';
+  ctx.fillRect(0,0,C.width,C.height);
+
+  const cx=(px+.5)*S,cy=(py+.5)*S;
+  const radiusCells=(level===1&&mode==='normal'?3.05:mode==='hard'?2.3:2.75);
+  const r=radiusCells*S;
+
+  const ax=Math.max(0,Math.floor((cx-r)/S)-1);
+  const bx=Math.min(N-1,Math.ceil((cx+r)/S)+1);
+  const ay=Math.max(0,Math.floor((cy-r)/S)-1);
+  const by=Math.min(N-1,Math.ceil((cy+r)/S)+1);
+
+  ctx.save();
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.clip();
+
+  for(let y=ay;y<=by;y++){
+    for(let x=ax;x<=bx;x++){
+      const d=Math.hypot((x+.5)*S-cx,(y+.5)*S-cy);
+      if(d>r)continue;
+      const f=Math.max(0,1-d/r);
+
+      if(map[y][x]===1){
+        ctx.fillStyle='rgba(39,38,35,'+(0.12+.88*f)+')';
+        ctx.fillRect(x*S,y*S,S,S);
+        ctx.fillStyle='rgba(10,10,9,'+(0.55+.45*f)+')';
+        ctx.fillRect(x*S+4,y*S+4,S-8,S-8);
+      }else{
+        ctx.fillStyle='rgba(91,84,73,'+(0.06+.94*f)+')';
+        ctx.fillRect(x*S+1,y*S+1,S-2,S-2);
+
+        if(map[y][x]===2){
+          ctx.shadowBlur=22;ctx.shadowColor='#9fe09b';
+          ctx.fillStyle='#82d58b';
+          ctx.fillRect(x*S+S*.25,y*S+S*.25,S*.5,S*.5);
+          ctx.shadowBlur=0;
+        }
+
+        if(map[y][x]===3){
+          ctx.fillStyle='#b94e4e';
+          ctx.beginPath();
+          ctx.arc((x+.5)*S,(y+.5)*S,S*.16,0,Math.PI*2);
+          ctx.fill();
+        }
+      }
+    }
+  }
+  ctx.restore();
+
+  for(const p of particles){
+    p.y-=p.v;if(p.y<0)p.y=C.height;
+    const d=Math.hypot(p.x-cx,p.y-cy);
+    if(d<r){
+      ctx.fillStyle='rgba(220,207,171,'+p.a*(1-d/r)+')';
+      ctx.fillRect(p.x,p.y,1.5,1.5);
+    }
+  }
+
+  const flame=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
+  flame.addColorStop(0,'rgba(255,224,139,.34)');
+  flame.addColorStop(.3,'rgba(255,190,76,.13)');
+  flame.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=flame;
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill();
+
+  ctx.fillStyle='#e8d7b0';
+  ctx.beginPath();ctx.arc(cx,cy,S*.27,0,Math.PI*2);ctx.fill();
+
+  ctx.fillStyle='#181714';
+  ctx.beginPath();ctx.arc(cx,cy-S*.04,S*.19,0,Math.PI*2);ctx.fill();
+
+  ctx.fillStyle='#f3c85c';
+  ctx.beginPath();ctx.arc(cx+S*.18,cy-S*.13,S*.075,0,Math.PI*2);ctx.fill();
+
+  lvEl.textContent=level;
+  timeEl.textContent=Math.ceil(time);
+  scoreEl.textContent=score.toLocaleString();
+}
+
+function setPaused(next){
+  if(!playing)return;
+  paused=next;
+  pauseOverlay.classList.toggle('show',paused);
+  pauseBtn.textContent=paused?'RESUME':'PAUSE';
+  if(!paused)last=performance.now();
+  draw();
+}
+
+function chooseMode(m){
+  mode=m;
+  level=1;score=0;
+  normalBtn.classList.toggle('active',m==='normal');
+  hardBtn.classList.toggle('active',m==='hard');
+  startLevelFresh();
+}
+
+document.querySelectorAll('[data-d]').forEach(b=>{
+  b.addEventListener('click',()=>{
+    const d=b.dataset.d;
+    move(d==='l'?-1:d==='r'?1:0,d==='u'?-1:d==='d'?1:0);
+  });
+});
+
+document.addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(k==='p'||k==='escape'){e.preventDefault();setPaused(!paused);return}
+  const d=k==='arrowup'||k==='w'?[0,-1]:
+         k==='arrowdown'||k==='s'?[0,1]:
+         k==='arrowleft'||k==='a'?[-1,0]:
+         k==='arrowright'||k==='d'?[1,0]:null;
+  if(d){e.preventDefault();move(...d)}
+});
+
+C.addEventListener('touchstart',e=>{
+  const t=e.touches[0];touch={x:t.clientX,y:t.clientY};
+},{passive:true});
+
+C.addEventListener('touchend',e=>{
+  if(!touch)return;
+  const t=e.changedTouches[0];
+  const dx=t.clientX-touch.x,dy=t.clientY-touch.y;
+  touch=null;
+  if(Math.max(Math.abs(dx),Math.abs(dy))<18)return;
+  if(Math.abs(dx)>Math.abs(dy))move(dx>0?1:-1,0);
+  else move(0,dy>0?1:-1);
+},{passive:true});
+
+normalBtn.addEventListener('click',()=>chooseMode('normal'));
+hardBtn.addEventListener('click',()=>chooseMode('hard'));
+pauseBtn.addEventListener('click',()=>setPaused(!paused));
+resumeBtn.addEventListener('click',()=>setPaused(false));
+retryBtn.addEventListener('click',retryLevel);
+quitBtn.addEventListener('click',()=>chooseMode('normal'));
+restartBtn.addEventListener('click',()=>chooseMode(mode));
+
+function loop(now){
+  const dt=Math.min(.1,(now-last)/1000);
+  last=now;
+  if(playing&&!paused){
+    time-=dt;
+    if(time<=0)die('Your lantern went dark.');
+    else draw();
+  }
+  requestAnimationFrame(loop);
+}
+
+startLevelFresh();
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
