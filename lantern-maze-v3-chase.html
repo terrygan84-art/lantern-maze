@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Lantern Maze — The Chase</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#050607;color:#eee9df;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.wrap{width:min(96vw,680px);margin:14px auto;padding:0 8px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.title{font-size:18px;font-weight:900}
+.stats{display:flex;align-items:center;gap:8px;font-size:10px;color:#999;flex-wrap:wrap;justify-content:flex-end}
+.stats b{color:#f4df9b}
+.ctrl{display:flex;gap:5px}
+.ctrl button{border:1px solid #39362f;background:#11110f;color:#aaa;border-radius:8px;padding:6px 8px;font:700 9px ui-monospace}
+.ctrl button:active{transform:scale(.96);background:#252218}
+.modes{display:flex;gap:7px;justify-content:center;margin:8px 0}
+.modes button{border:1px solid #39362f;background:#11110f;color:#999;border-radius:9px;padding:7px 12px;font:700 11px ui-monospace}
+.modes button.active{color:#f4df9b;border-color:#8d7540}
+.frame{position:relative;background:#000;border:1px solid #28251f;border-radius:14px;padding:7px}
+canvas{display:block;width:100%;height:auto;border-radius:9px;touch-action:none}
+.message{text-align:center;min-height:20px;margin:7px 0;color:#999;font-size:11px}
+.pad{display:grid;grid-template-columns:repeat(3,62px);gap:7px;justify-content:center}
+.pad button{border:1px solid #39362f;background:#151512;color:#eee;border-radius:12px;min-width:62px;min-height:52px;font:700 19px ui-monospace;touch-action:manipulation}
+.pad button:active{transform:scale(.96);background:#29251b}
+.note{text-align:center;color:#666;font-size:10px;margin-top:8px}
+.overlay{display:none;position:absolute;inset:7px;background:rgba(2,3,4,.9);border-radius:9px;align-items:center;justify-content:center;flex-direction:column;text-align:center}
+.overlay.show{display:flex}
+.big{font-size:27px;font-weight:900;letter-spacing:.08em;color:#e6d7b4}
+.sub{font-size:11px;color:#8d897f;margin:8px 0 17px}
+.overlay button{border-radius:10px;padding:11px 17px;font:700 11px ui-monospace}
+.primary{border:1px solid #67552f;background:#1b1810;color:#f2d98d}
+.secondary{border:1px solid #38352f;background:#12120f;color:#999;margin-left:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="title">🕯 LANTERN MAZE</div>
+    <div class="stats">
+      <span>LV <b id="lv">1</b></span>
+      <span>LEAD <b id="lead">12</b></span>
+      <span>★ <b id="score">0</b></span>
+      <div class="ctrl">
+        <button id="pause">PAUSE</button>
+        <button id="restart">RESTART</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modes">
+    <button id="normal" class="active">NORMAL</button>
+    <button id="hard">HARD</button>
+  </div>
+
+  <div class="frame">
+    <canvas id="game" width="640" height="640"></canvas>
+
+    <div class="overlay" id="pauseOverlay">
+      <div class="big">PAUSED</div>
+      <button class="primary" id="resume">RESUME</button>
+    </div>
+
+    <div class="overlay" id="deathOverlay">
+      <div class="big">CAUGHT</div>
+      <div class="sub" id="deathText">The darkness found you.</div>
+      <button class="primary" id="retry">RETRY LEVEL</button>
+      <button class="secondary" id="quit">NEW RUN</button>
+    </div>
+  </div>
+
+  <div class="message" id="message">Something is behind you. Find the green glow.</div>
+
+  <div class="pad">
+    <div></div><button data-d="u">▲</button><div></div>
+    <button data-d="l">◀</button><button data-d="d">▼</button><button data-d="r">▶</button>
+  </div>
+
+  <div class="note">Keep moving • The darkness follows your path • Swipe or use WASD / arrows</div>
+</div>
+
+<script>
+(() => {
+const root=document.querySelector('.wrap');
+const C=document.getElementById('game'),ctx=C.getContext('2d');
+const N=19,S=C.width/N;
+const lvEl=document.getElementById('lv'),leadEl=document.getElementById('lead'),scoreEl=document.getElementById('score');
+const msg=document.getElementById('message'),pauseOverlay=document.getElementById('pauseOverlay'),deathOverlay=document.getElementById('deathOverlay');
+const deathText=document.getElementById('deathText');
+const normalBtn=document.getElementById('normal'),hardBtn=document.getElementById('hard');
+const pauseBtn=document.getElementById('pause'),restartBtn=document.getElementById('restart');
+const retryBtn=document.getElementById('retry'),quitBtn=document.getElementById('quit'),resumeBtn=document.getElementById('resume');
+
+const dirs=[[0,-1],[1,0],[0,1],[-1,0]];
+let map,level=1,score=0,mode='normal';
+let player={x:1,y:1},monster={x:1,y:1};
+let levelStartPlayer,levelStartMonster,levelStartScore;
+let playing=true,paused=false,lead=12,last=performance.now(),touch=null;
+let monsterExtra=0,particles=[];
+
+function cloneMap(m){return m.map(r=>r.slice())}
+
+function shuffle(a){
+  for(let i=a.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [a[i],a[j]]=[a[j],a[i]];
+  }
+  return a;
+}
+
+function key(x,y){return x+','+y}
+
+function shortestPath(a,b){
+  const q=[a],prev=new Map([[key(a.x,a.y),null]]);
+  for(let i=0;i<q.length;i++){
+    const u=q[i];
+    if(u.x===b.x&&u.y===b.y)break;
+    for(const [dx,dy] of dirs){
+      const nx=u.x+dx,ny=u.y+dy;
+      if(nx<0||ny<0||nx>=N||ny>=N||map[ny][nx]===1)continue;
+      const k=key(nx,ny);
+      if(!prev.has(k)){prev.set(k,u);q.push({x:nx,y:ny})}
+    }
+  }
+  const target=key(b.x,b.y);
+  if(!prev.has(target))return [];
+  const out=[];let u=b;
+  while(u){out.push(u);u=prev.get(key(u.x,u.y))}
+  return out.reverse();
+}
+
+function generateLevel(){
+  let attempts=0;
+  while(true){
+    attempts++;
+    map=Array.from({length:N},()=>Array(N).fill(1));
+
+    function carve(x,y){
+      map[y][x]=0;
+      for(const [dx,dy] of shuffle(dirs.slice())){
+        const nx=x+dx*2,ny=y+dy*2;
+        if(nx>0&&ny>0&&nx<N-1&&ny<N-1&&map[ny][nx]){
+          map[y+dy][x+dx]=0;
+          carve(nx,ny);
+        }
+      }
+    }
+
+    carve(1,1);
+    map[N-2][N-2]=2;
+
+    const entrance={x:1,y:1},exit={x:N-2,y:N-2};
+    const main=shortestPath(entrance,exit);
+
+    // Keep the main route substantial, but not absurdly long.
+    if(main.length<55||main.length>105){
+      if(attempts<30)continue;
+    }
+
+    // Start the player partway into the maze so the darkness has a real lead.
+    const startIndex=Math.min(16,Math.max(10,Math.floor(main.length*.22)));
+    if(main.length-startIndex<28 && attempts<30)continue;
+
+    player={x:main[startIndex].x,y:main[startIndex].y};
+    monster={x:entrance.x,y:entrance.y};
+
+    levelStartPlayer={...player};
+    levelStartMonster={...monster};
+    levelStartScore=score;
+
+    const initial=shortestPath(monster,player).length-1;
+    lead=initial;
+
+    particles=Array.from({length:50},()=>({
+      x:Math.random()*C.width,y:Math.random()*C.height,
+      v:.08+Math.random()*.28,a:.10+Math.random()*.3
+    }));
+    break;
+  }
+}
+
+function resetLevel(){
+  map=cloneMap(levelSnapshot);
+  player={...levelStartPlayer};
+  monster={...levelStartMonster};
+  score=levelStartScore;
+  lead=shortestPath(monster,player).length-1;
+  monsterExtra=0;
+  playing=true;paused=false;
+  pauseOverlay.classList.remove('show');
+  deathOverlay.classList.remove('show');
+  pauseBtn.textContent='PAUSE';
+  msg.textContent='Same maze. The darkness is still behind you.';
+  last=performance.now();
+  draw();
+}
+
+let levelSnapshot;
+
+function startFreshLevel(){
+  generateLevel();
+  levelSnapshot=cloneMap(map);
+  playing=true;paused=false;
+  pauseOverlay.classList.remove('show');
+  deathOverlay.classList.remove('show');
+  pauseBtn.textContent='PAUSE';
+  msg.textContent=level===1?'Something is behind you. Find the green glow.':'Level '+level+' — it is getting closer.';
+  last=performance.now();
+  draw();
+}
+
+function die(reason){
+  playing=false;
+  deathText.textContent=reason+' You reached Level '+level+' with '+score.toLocaleString()+' points.';
+  deathOverlay.classList.add('show');
+  msg.textContent='';
+}
+
+function moveMonster(){
+  const p=shortestPath(monster,player);
+  if(p.length<=1){die('The darkness caught you.');return false}
+
+  const step=p[1];
+  monster={x:step.x,y:step.y};
+
+  // Hard mode gets an extra pursuit step every third player move.
+  if(mode==='hard'){
+    monsterExtra++;
+    if(monsterExtra>=3){
+      monsterExtra=0;
+      const p2=shortestPath(monster,player);
+      if(p2.length>1)monster={x:p2[1].x,y:p2[1].y};
+    }
+  }
+
+  lead=shortestPath(monster,player).length-1;
+  if(monster.x===player.x&&monster.y===player.y){
+    die('The darkness caught you.');
+    return false;
+  }
+  return true;
+}
+
+function move(dx,dy){
+  if(!playing||paused)return;
+  const nx=player.x+dx,ny=player.y+dy;
+  if(nx<0||ny<0||nx>=N||ny>=N||map[ny][nx]===1)return;
+
+  player={x:nx,y:ny};
+
+  if(map[ny][nx]===2){
+    const bonus=Math.max(0,lead)*100+level*500;
+    score+=bonus;
+    level++;
+    playing=false;
+    msg.textContent='✦ ESCAPED! +'+bonus.toLocaleString();
+    setTimeout(startFreshLevel,650);
+    return;
+  }
+
+  if(!moveMonster())return;
+  draw();
+}
+
+function setPaused(v){
+  if(!playing)return;
+  paused=v;
+  pauseOverlay.classList.toggle('show',v);
+  pauseBtn.textContent=v?'RESUME':'PAUSE';
+  if(!v)last=performance.now();
+}
+
+function chooseMode(m){
+  mode=m;
+  level=1;score=0;
+  normalBtn.classList.toggle('active',m==='normal');
+  hardBtn.classList.toggle('active',m==='hard');
+  startFreshLevel();
+}
+
+function draw(){
+  ctx.fillStyle='#020304';
+  ctx.fillRect(0,0,C.width,C.height);
+
+  const cx=(player.x+.5)*S,cy=(player.y+.5)*S;
+  const radiusCells=mode==='hard'?2.35:3.05;
+  const r=radiusCells*S;
+
+  const ax=Math.max(0,Math.floor((cx-r)/S)-1),bx=Math.min(N-1,Math.ceil((cx+r)/S)+1);
+  const ay=Math.max(0,Math.floor((cy-r)/S)-1),by=Math.min(N-1,Math.ceil((cy+r)/S)+1);
+
+  ctx.save();
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.clip();
+
+  for(let y=ay;y<=by;y++){
+    for(let x=ax;x<=bx;x++){
+      const d=Math.hypot((x+.5)*S-cx,(y+.5)*S-cy);
+      if(d>r)continue;
+      const f=Math.max(0,1-d/r);
+
+      if(map[y][x]===1){
+        ctx.fillStyle='rgba(39,38,35,'+(0.12+.88*f)+')';
+        ctx.fillRect(x*S,y*S,S,S);
+        ctx.fillStyle='rgba(10,10,9,'+(0.55+.45*f)+')';
+        ctx.fillRect(x*S+4,y*S+4,S-8,S-8);
+      }else{
+        ctx.fillStyle='rgba(91,84,73,'+(0.06+.94*f)+')';
+        ctx.fillRect(x*S+1,y*S+1,S-2,S-2);
+
+        if(map[y][x]===2){
+          ctx.shadowBlur=22;ctx.shadowColor='#9fe09b';
+          ctx.fillStyle='#82d58b';
+          ctx.fillRect(x*S+S*.25,y*S+S*.25,S*.5,S*.5);
+          ctx.shadowBlur=0;
+        }
+      }
+    }
+  }
+
+  // The pursuer is mostly hidden. You only see it when it enters the lantern.
+  const md=Math.hypot((monster.x+.5)*S-cx,(monster.y+.5)*S-cy);
+  if(md<r){
+    const mx=(monster.x+.5)*S,my=(monster.y+.5)*S;
+    const alpha=Math.max(.15,1-md/r);
+    ctx.fillStyle='rgba(7,7,7,'+(0.65+.3*alpha)+')';
+    ctx.beginPath();ctx.arc(mx,my,S*.39,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='rgba(170,55,48,'+alpha+')';
+    ctx.beginPath();ctx.arc(mx-S*.12,my-S*.07,S*.055,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(mx+S*.12,my-S*.07,S*.055,0,Math.PI*2);ctx.fill();
+  }
+
+  ctx.restore();
+
+  for(const p of particles){
+    p.y-=p.v;if(p.y<0)p.y=C.height;
+    const d=Math.hypot(p.x-cx,p.y-cy);
+    if(d<r){
+      ctx.fillStyle='rgba(220,207,171,'+p.a*(1-d/r)+')';
+      ctx.fillRect(p.x,p.y,1.5,1.5);
+    }
+  }
+
+  const flame=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
+  flame.addColorStop(0,'rgba(255,224,139,.34)');
+  flame.addColorStop(.32,'rgba(255,190,76,.13)');
+  flame.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=flame;
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill();
+
+  ctx.fillStyle='#e8d7b0';
+  ctx.beginPath();ctx.arc(cx,cy,S*.27,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#181714';
+  ctx.beginPath();ctx.arc(cx,cy-S*.04,S*.19,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#f3c85c';
+  ctx.beginPath();ctx.arc(cx+S*.18,cy-S*.13,S*.075,0,Math.PI*2);ctx.fill();
+
+  lvEl.textContent=level;
+  leadEl.textContent=Math.max(0,lead);
+  scoreEl.textContent=score.toLocaleString();
+}
+
+document.querySelectorAll('[data-d]').forEach(b=>{
+  b.addEventListener('click',()=>{
+    const d=b.dataset.d;
+    move(d==='l'?-1:d==='r'?1:0,d==='u'?-1:d==='d'?1:0);
+  });
+});
+
+root.addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(k==='p'||k==='escape'){e.preventDefault();setPaused(!paused);return}
+  const d=k==='arrowup'||k==='w'?[0,-1]:
+         k==='arrowdown'||k==='s'?[0,1]:
+         k==='arrowleft'||k==='a'?[-1,0]:
+         k==='arrowright'||k==='d'?[1,0]:null;
+  if(d){e.preventDefault();move(...d)}
+});
+
+C.addEventListener('touchstart',e=>{
+  const t=e.touches[0];touch={x:t.clientX,y:t.clientY};
+},{passive:true});
+
+C.addEventListener('touchend',e=>{
+  if(!touch)return;
+  const t=e.changedTouches[0],dx=t.clientX-touch.x,dy=t.clientY-touch.y;
+  touch=null;
+  if(Math.max(Math.abs(dx),Math.abs(dy))<18)return;
+  if(Math.abs(dx)>Math.abs(dy))move(dx>0?1:-1,0);
+  else move(0,dy>0?1:-1);
+},{passive:true});
+
+normalBtn.addEventListener('click',()=>chooseMode('normal'));
+hardBtn.addEventListener('click',()=>chooseMode('hard'));
+pauseBtn.addEventListener('click',()=>setPaused(!paused));
+resumeBtn.addEventListener('click',()=>setPaused(false));
+retryBtn.addEventListener('click',resetLevel);
+quitBtn.addEventListener('click',()=>chooseMode(mode));
+restartBtn.addEventListener('click',()=>chooseMode(mode));
+
+startFreshLevel();
+})();
+</script>
+</body>
+</html>
